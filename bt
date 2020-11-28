@@ -1,0 +1,450 @@
+#!/bin/bash
+
+#version
+VER="0.42"
+
+# don't change this
+# this is used to verify ByteStamp identity
+BYTESTAMPADDR=1PtCJLJPcZSrwsdmwg2YPoAYS9yJTCMoTe
+APPCODE=A
+BYTESTAMPWS="https://api.bytestamp.net/api/v2/bs/"
+########################################
+
+## change this according to your environment
+BITCOINDAEMON="/snap/bin/bitcoin-core.daemon -daemon"
+BITCOINCLI="/snap/bin/bitcoin-core.cli"
+##################################
+
+# this function generates the ByteStampMD5 of a String
+# the ByteStampMD5 is an optimized MD5 to avoid MD5 collisions 
+bsmd5(){
+MD5=$(perl -e "print qq($1)" | md5sum| awk '{ print $1 }' )
+SHA512=$(perl -e "print qq($1)" | shasum -a 512| awk '{ print $1 }' )
+KECCAK512=$(perl -e "use Crypt::Digest::Keccak512;print Crypt::Digest::Keccak512->new->add('$1')->hexdigest;")
+BSMD5=$(perl -e "print qq($MD5$SHA512$KECCAK512)" | md5sum| awk '{ print $1 }' )
+echo $BSMD5
+}
+
+
+# this function generates the ByteStampMD5 of a File
+bsmd5f(){
+MD5=$(md5sum $1| awk '{ print $1 }' )
+SHA512=$(shasum -a 512 $1| awk '{ print $1 }' )
+KECCAK512=$(perl -e "use Crypt::Digest::Keccak512;print Crypt::Digest::Keccak512->new->addfile('$1', "b")->hexdigest;")
+BSMD5=$(perl -e "print qq($MD5$SHA512$KECCAK512)" | md5sum| awk '{ print $1 }' )
+echo $BSMD5
+}
+
+# this function starts bitcoin daemon if it is not running
+checkdaemon(){
+$BITCOINCLI uptime &>/dev/null 
+ERRCOD=$?
+if [ $ERRCOD -eq 1 ]
+then
+  $($BITCOINDAEMON)
+  echo Starting Bitcoin daemon. Please wait...
+  /usr/bin/sleep 17
+  $BITCOINCLI uptime &>/dev/null
+   ERRCODE=$?
+  if [ $ERRCODE -eq 1 ]
+  then
+    echo Error Starting Bitcoin daemon
+    exit 1
+  elif  [ $ERRCODE -eq 28 ]
+  then
+   echo Blockchain still loading. Please retry later
+   exit 28
+  fi
+elif  [ $ERRCOD -eq 28 ]
+then
+ echo Blockchain still loading. Please retry later
+ exit 28
+fi
+
+}
+
+
+# this function retrieves your ByteStamp Address and creates it if needed. 
+mybsaddr(){
+
+MYBSADDR1=$($BITCOINCLI getaddressesbylabel "MyByteStampAddress")
+
+if [ $? -eq 11 ]
+then
+  # Generating Your ByteStamp Address...
+  MYBSADDR=$($BITCOINCLI getnewaddress "MyByteStampAddress" legacy)
+else
+  MYBSADDR=$(echo $MYBSADDR1| awk '{ print $2 }'|cut -c2-35)
+fi
+
+echo $MYBSADDR
+}
+
+
+# call to ByteStamp WebServices
+bsapi()
+{
+WSNAME=$1
+ local -n WSARG=$2
+
+if [ ! -d "$HOME/.bytestamp" ]; then
+  mkdir "$HOME/.bytestamp"
+fi
+
+if [ ! -f "$HOME/.bytestamp/lasthash" ]; then
+  touch "$HOME/.bytestamp/lasthash"
+fi
+
+# ByteStampMD5 of previous command
+BYTESTAMP_LASTHASH=$(cat "$HOME/.bytestamp/lasthash")
+
+# generate a random number
+RANDOM_NUMBER="$RANDOM"
+
+# ByteStamp URL to WebServices
+BYTESTAMPURL="$BYTESTAMPWS$RANDOM_NUMBER/$WSNAME"
+
+# put command args in the ByteStamp format to be signed
+CMDTOSIGN="{"
+for key in "${!WSARG[@]}"; do 
+  COMMA=""
+  if [ "$CMDTOSIGN" != "{" ]
+  then
+    COMMA=","
+  fi
+  CMDTOSIGN="$CMDTOSIGN$COMMA\"$key\"=>\"${WSARG[$key]}\""
+done
+CMDTOSIGN="$CMDTOSIGN}"
+
+# build command string for curl
+CMDCURL=""
+TOSIGNCURL=""
+for key in "${!WSARG[@]}"; do 
+if [ "$key" == "tosign" ]; then
+   TOSIGNCURL=${WSARG[$key]}
+elif [ "$key" == "signature" ]; then
+   SIGNATURECURL=${WSARG[$key]}
+else
+  CMDCURL="$CMDCURL -d $key=${WSARG[$key]}"
+fi
+
+done
+
+# command to be processed by ByteStamp
+BYTESTAMPCMD="$WSNAME;$CMDTOSIGN"
+
+# generate ByteStampMD5 of this command
+BSMD5CMD=$(bsmd5 "${BYTESTAMPCMD}")
+
+# concatenate ByteStampMD5 of previous command with ByteStampMD5 of this command
+BSMD5CMDPREVCONC="$BYTESTAMP_LASTHASH$BSMD5CMD" 
+
+# generate ByteStampMD5 of the two ByteStampMD5 concatenated
+BSMD5STRCMD=$(bsmd5 "${BSMD5CMDPREVCONC}")
+
+# current UTC time in YYYYMMDDHHMMSS format
+BYTESTAMPNOW=$(date -u +%Y%m%d%H%M%S)
+
+# build the command string:
+#   1  Time UTC
+#   2  My ByteStamp Address
+#   3  command to be processed by ByteStamp
+#   4  ByteStampMD5 of the previous ByteStampMD5 command concatenated with this one
+#
+# pipe delimited
+
+STRCMD="$BYTESTAMPNOW|$MYBSADDR|$BYTESTAMPCMD|$BSMD5STRCMD"
+# sign the command string using My ByteStamp Address 
+SIGNEDSTRCMD=$($BITCOINCLI signmessage $MYBSADDRBTC "${STRCMD}")
+
+
+
+# set headers used for auth based on your signature
+# ByteStamp uses these to verify your identity using your signature
+HEADERUSER="X-USER-TOKEN: ${MYBSADDR}"
+HEADERSIGN="X-USER-SIGNATURE: ${SIGNEDSTRCMD}"
+
+# set ByteStamp Application code
+HEADERAPPCODE="X-USER-APPCODE: ${APPCODE}"
+
+# call ByteStamp WebService
+if [ "$TOSIGNCURL" == "" ]; then
+   BYTESTAMP_RESP=$(/usr/bin/curl -s -X POST -H "${HEADERUSER}" -H "${HEADERSIGN}" -H "${HEADERAPPCODE}" --data-urlencode strcmd="${STRCMD}" ${CMDCURL} $BYTESTAMPURL)
+else
+   BYTESTAMP_RESP=$(/usr/bin/curl -s -X POST -H "${HEADERUSER}" -H "${HEADERSIGN}" -H "${HEADERAPPCODE}" --data-urlencode strcmd="${STRCMD}"  --data-urlencode tosign="${TOSIGNCURL}" --data-urlencode signature="${SIGNATURECURL}" ${CMDCURL} $BYTESTAMPURL)
+
+fi
+
+
+# verify ByteStamp Identity using ByteStamp Signature
+# this is to be sure you are talking to ByteStamp
+# it is based on ByteStamp BTC public key so id works 
+# even without ssl which requires central authority
+BSSIGN_BASE64=$(echo $BYTESTAMP_RESP|python3 -c "import sys, json; print(json.load(sys.stdin)['bssign'])")
+BSSIGN=$(echo $BSSIGN_BASE64 | base64 -d)
+
+BYTESTAMP_VER=$($BITCOINCLI verifymessage $BYTESTAMPADDR $BSSIGN "${STRCMD}")
+
+if  [ "$BYTESTAMP_VER" != "true" ]
+then
+  #Error - ByteStamp Signature is invalid
+  BYTESTAMP_RESP="ERR"
+fi
+
+# the ByteStampMD5 of the two ByteStampMD5 concatenated is now the previous
+# ByteStampMD5 for the next API call
+# in this way each call to ByteStamp WebService has a ByteStampMD5 generated
+# upon the previous call, in the same way a BlockChain has the hash of
+# each block generated upon the hash of previous block.
+# So we can detect a man-in-the-middle attack even 
+# without ssl which requires central authority
+BYTESTAMP_LASTHASH=$BSMD5STRCMD
+echo $BYTESTAMP_LASTHASH > "$HOME/.bytestamp/lasthash"
+
+echo $BYTESTAMP_RESP
+}
+
+###########################
+
+[ $# -eq 0 ] && { echo "Usage: $0 files...";echo "";echo "List BlockChain Information about the FILEs";echo "If no file is registered to BlockChain then register FILEs"; echo ""; echo "ByteStamp shell client ver ${VER}"; exit 1; }
+
+
+#launch the Bitcoin service if it is not already running    
+checkdaemon
+
+# my ByteStamp Address
+MYBSADDRBTC=$(mybsaddr)
+
+# my ByteStamp Address with crypto type
+MYBSADDR=BTC:$MYBSADDRBTC
+
+echo 
+echo Your ByteStamp Address is $MYBSADDR
+echo 
+
+
+########################################
+BSMD5F=""
+declare -A filehash
+
+echo
+echo Generating ByteStampMD5 of your files...
+echo
+
+for file in "$@"; do
+  if [ -f "$file" ]; then
+    BSMD5=$(bsmd5f $file)
+    COMMA=""
+    if [ "$BSMD5F" != "" ]
+    then
+      COMMA=","
+    fi
+    BSMD5F=$BSMD5F$COMMA$BSMD5
+    filehash[$file]=$BSMD5
+  fi
+done
+
+
+
+# declare an associative array to set arguments 
+# to pass to ByteStamp Webservice
+# i.e. the comma separated list of ByteStampMD5
+# and reg to 0 for retrieve file blockchain info
+# without register to blockchain
+# ByteStampMD5s are generated client side
+# ByteStamp only receives hashes, not the file itself
+
+declare -A wsargbs=( [md5s]="$BSMD5F" [reg]="0"  )
+
+echo
+echo "Retrieving BlockChain info for your files..."
+echo
+echo
+
+# this call the ByteStamp WebService bstmd5 
+# with arguments set above
+BSRESP=$(bsapi "bstmd5" wsargbs)
+if  [ "$BSRESP" == "ERR" ]
+then
+ echo Error - ByteStamp Signature is invalid
+ exit 1
+fi
+
+# see if almost one file is registered in blockchain
+ALMOST_ONE="nofiles"
+for file in "${!filehash[@]}"; do
+     # get the status of this file in the blockchain
+    STATUSBC=$(echo $BSRESP|jq '.ris."'${filehash[$file]}'".status')
+  if [ "$STATUSBC" != "0" ];then
+    ALMOST_ONE="yes"
+  fi
+done
+
+# if no files are registered in blockchain, this meas you want to register them
+if  [ "$ALMOST_ONE" == "nofiles" ] ;then
+  # here the arguments are reg to 1 to register
+  # the ByteSTampProof and also own to 1 
+  # to also take ownership of these files
+  
+  declare -A wsargregbs=( [md5s]="$BSMD5F" [reg]="1" [own]="1" )
+  
+  # this command registers in blockchain all files 
+  # it registers the ByteStampProof, i.e. the Proof Of Existence 
+  # and it asks to register the proof of ownership
+  BSRESPREG=$(bsapi "bstmd5" wsargregbs)
+if  [ "$BSRESPREG" == "ERR" ]
+then
+  echo Error - ByteStamp Signature is invalid
+ exit 1
+fi
+
+if [ $(echo $BSRESPREG|jq '.nocred') == "1" ]
+then
+   echo "Insufficient ByteStamp Credits to register files in blockchain"
+   exit 2 
+fi
+
+  echo "Registered in blockchain all files"
+  echo 
+  
+  # When ByteStamp receives the request to register the Proof Of Ownership
+  # it sends a string to be signed for each file
+  # Each string is a declaration that this ByteStampMD5 belongs to this
+  # ByteStamp Address
+  # Then now we must put our signature on each string to take file ownership.
+  # When we take the ownership of a file, our signature is stored 
+  # in blockchain, so everyone can read who is the owner of 
+  # this ByteStamp Digital Asset
+  # The signature occurs client side as your ByteStamp Address is a normal
+  # Bitcoin address that is managed by your Bitcoin wallet client
+  for key in  $(echo $BSRESPREG|jq '.dafs|keys[]');do
+   echo 
+   echo Taking ownership of ByteStamp Digital Asset
+   echo with ByteStampMD5 $key ...
+   TOSIGN=$(echo $BSRESPREG|jq '.dafs.'${key}'.tosign')
+   TOSIGN="${TOSIGN%\"}"
+   TOSIGN="${TOSIGN#\"}"
+   
+   BYTESTAMP_ASSET_SIGNED=$($BITCOINCLI signmessage "${MYBSADDRBTC}" "${TOSIGN}")
+   INPUTTX=$(echo $BSRESPREG|jq '.dafs.'${key}'.fromtx')
+   INPUTTX="${INPUTTX%\"}"
+   INPUTTX="${INPUTTX#\"}"
+
+   ID_OPERATION=$(echo $BSRESPREG|jq '.dafs.'${key}'.idop')
+   ID_OPERATION="${ID_OPERATION%\"}"
+   ID_OPERATION="${ID_OPERATION#\"}"
+  
+    ASSETBSMD5=$key
+    ASSETBSMD5="${ASSETBSMD5%\"}"
+    ASSETBSMD5="${ASSETBSMD5#\"}"
+
+   
+   declare -A wsargassetbs=( [md5]="$ASSETBSMD5" [desttype]="BTC" [destaddr]="$MYBSADDRBTC" 
+                             [inputtx]="$INPUTTX" [sendertype]="BTC" [senderaddr]="$MYBSADDRBTC" 
+                             [idop]="$ID_OPERATION" [tosign]=$TOSIGN
+                             [signature]="$BYTESTAMP_ASSET_SIGNED")
+
+   BSRESPASSET=$(bsapi "signasset" wsargassetbs)
+
+   if [ $(echo $BSRESPASSET|jq '.nocred') == "1" ]
+   then
+     echo "Insufficient ByteStamp Credits to take file ownership in blockchain"
+     exit 3 
+    fi
+ 
+
+   if  [ "$BSRESPREG" == "ERR" ]
+   then
+     echo Error - ByteStamp Signature is invalid
+     exit 1
+   fi
+ 
+
+  done
+
+# after blockchain registration, retreive new file info from blockchain
+echo
+echo "Retrieving BlockChain info for your files..."
+echo
+echo
+
+BSRESP=$(bsapi "bstmd5" wsargbs)
+if  [ "$BSRESP" == "ERR" ]
+then
+ echo Error - ByteStamp Signature is invalid
+ exit 1
+fi
+
+
+fi
+
+
+
+# Now we print to screen files info retrieved from ByteStamp.
+# Here we only print the time of the Proof
+# Of Existence and the owner to respect 80 
+# width columns of legacy terminal.
+# But the json returned by ByteStamp
+# contains much more fields, such as block
+# number and transaction ID. Try yourself!
+#
+# A thirdy part can always drag and drop the files
+# to https://go.bytestamp.net to verify them
+# or use the windows software available at
+# https://blockchain.bytestamp.net
+#  
+printf "%s\t%s %s %s %s\n" "File Name" "ByteStamped At(UTC)" "Owner registered in blockchain"
+echo 
+for file in "${!filehash[@]}"; do
+     # get the timestamp of this file in the blockchain
+    TIMEBC=$(echo $BSRESP|jq '.ris."'${filehash[$file]}'".time')
+    TIMEBC="${TIMEBC%\"}"
+    TIMEBC="${TIMEBC#\"}"
+
+     # get the block of this file in the blockchain
+    BLOCKBC=$(echo $BSRESP|jq '.ris."'${filehash[$file]}'".block')
+    BLOCKBC="${BLOCKBC%\"}"
+    BLOCKBC="${BLOCKBC#\"}"
+
+     # get the owner of this file from the blockchain
+    OWNERBC=$(echo $BSRESP|jq '.ris."'${filehash[$file]}'".owner')
+    OWNERBC="${OWNERBC%\"}"
+    OWNERBC="${OWNERBC#\"}"
+
+    OWNERNAME=$(echo $BSRESP|jq '.ris."'${filehash[$file]}'".ownname')
+    OWNERNAME="${OWNERNAME%\"}"
+    OWNERNAME="${OWNERNAME#\"}"
+    
+    OWNERBRAND=$(echo $BSRESP|jq '.ris."'${filehash[$file]}'".ownbrand')
+    OWNERBRAND="${OWNERBRAND%\"}"
+    OWNERBRAND="${OWNERBRAND#\"}"
+     
+    if [ "$OWNERBRAND" == "null" ]; then
+      OWNERBRAND=""   
+    fi
+
+    if [ "$OWNERBRAND" != "" ]; then
+      OWNERBC=$OWNERBRAND
+    fi
+
+    filestr=$(echo $file|cut -c1-15)
+    timebcstr=$(echo $TIMEBC|cut -c1-19)
+
+  if [ "$OWNERBC" == "null" ]; then
+     OWNERBC=""   
+   fi
+   
+  STATUSBC=$(echo $BSRESP|jq '.ris."'${filehash[$file]}'".status')
+  if [ "$STATUSBC" == "1" ];then
+      timebcstr="Sending to blockchain..."
+      OWNERBC=""  
+  elif [ "$STATUSBC" == "2" ];then
+      timebcstr="Waiting for block confirmation..."
+      OWNERBC=""  
+  fi
+
+    printf "%s\t%s %s %s %s\n" "$filestr" $timebcstr $OWNERBC
+
+done
+
+
