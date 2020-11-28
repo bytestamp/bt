@@ -33,5 +33,6 @@ Tested in Ubuntu 20.04
 `bt FILEs`
 
 List BlockChain Information about the FILEs
+
 If no file is registered to BlockChain then register FILEs
 
