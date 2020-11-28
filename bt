@@ -1,7 +1,7 @@
 #!/bin/bash
 
 #version
-VER="0.42"
+VER="0.43"
 
 # don't change this
 # this is used to verify ByteStamp identity
@@ -206,7 +206,7 @@ echo $BYTESTAMP_RESP
 
 ###########################
 
-[ $# -eq 0 ] && { echo "Usage: $0 files...";echo "";echo "List BlockChain Information about the FILEs";echo "If no file is registered to BlockChain then register FILEs"; echo ""; echo "ByteStamp shell client ver ${VER}"; exit 1; }
+[ $# -eq 0 ] && { echo "Usage: bt files...";echo "";echo "List BlockChain Information about the FILEs";echo "If no file is registered to BlockChain then register FILEs"; echo ""; echo "ByteStamp shell client ver ${VER}"; exit 1; }
 
 
 #launch the Bitcoin service if it is not already running    
