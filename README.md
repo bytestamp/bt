@@ -1,7 +1,9 @@
 # bt
 Register files to blockchain.
 
-This is a sample linux script to use ByteStamp webservices.
+This is a sample bash script to use ByteStamp webservices.
+
+The script is self-explained and can be used to understand how to connect to ByteStamp webservices with any programming language.
 
 # Installation
 
