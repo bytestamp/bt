@@ -25,7 +25,6 @@ BSMD5=$(perl -e "print qq($MD5$SHA512$KECCAK512)" | md5sum| awk '{ print $1 }' )
 echo $BSMD5
 }
 
-
 # this function generates the ByteStampMD5 of a File
 bsmd5f(){
 MD5=$(md5sum $1| awk '{ print $1 }' )
@@ -41,23 +40,23 @@ $BITCOINCLI uptime &>/dev/null
 ERRCOD=$?
 if [ $ERRCOD -eq 1 ]
 then
-  $($BITCOINDAEMON)
-  echo Starting Bitcoin daemon. Please wait...
+  $BITCOINDAEMON
+  echo "Starting Bitcoin daemon. Please wait..."
   /usr/bin/sleep 17
   $BITCOINCLI uptime &>/dev/null
    ERRCODE=$?
   if [ $ERRCODE -eq 1 ]
   then
-    echo Error Starting Bitcoin daemon
+    echo "Error Starting Bitcoin daemon"
     exit 1
   elif  [ $ERRCODE -eq 28 ]
   then
-   echo Blockchain still loading. Please retry later
+   echo "Blockchain still loading. Please retry later"
    exit 28
   fi
 elif  [ $ERRCOD -eq 28 ]
 then
- echo Blockchain still loading. Please retry later
+ echo "Blockchain still loading. Please retry later"
  exit 28
 fi
 
@@ -211,6 +210,8 @@ echo $BYTESTAMP_RESP
 
 #launch the Bitcoin service if it is not already running    
 checkdaemon
+
+$BITCOINCLI loadwallet "btwallt"
 
 # my ByteStamp Address
 MYBSADDRBTC=$(mybsaddr)
